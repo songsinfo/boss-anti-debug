@@ -1,612 +1,612 @@
 
- // ==UserScript==
- // @name         BOSS 防刷新 (Chat compatibility)
- // @name:en      BOSS Anti Refresh - Chat compatibility
- // @namespace    https://local.invalid/boss-anti-refresh-chat-compat
- // @version      0.1.6
- // @description  BOSS 职位页和聊天页反调试兼容处理
- // @author       creamtea47
- // @license      Copyright 2026 creamtea47
- // @match        https://www.zhipin.com/*
- // @run-at       document-start
- // @sandbox      raw
- // @grant        none
- // @noframes
- // ==/UserScript==
-
- (() => {
-   'use strict';
-
-   const win = window;
-
-   if (
-     win.top !== win ||
-     win.location.protocol !== 'https:' ||
-     win.location.hostname !== 'www.zhipin.com'
-   ) return;
-
-   const version = '0.1.6';
-
-   const queueNames = [
-     'webpackJsonp',
-     'webpackChunkfe_web_sign',
-     'webpackChunkgeek'
-   ];
-
-   const marker = '__bossAntiRefreshQueueV2';
-   const apply = Reflect.apply;
-   const getOwnDescriptor = Object.getOwnPropertyDescriptor;
-   const define = Object.defineProperty;
-   const ownKeys = Object.keys;
-   const isArray = Array.isArray;
-   const functionSource = Function.prototype.toString;
-
-   const wrappedQueues = new WeakSet();
-   const replacements = new WeakMap();
-
-   const logInfo = win.console && win.console.info;
-   const logWarn = win.console && win.console.warn;
-
-   function report(message, warning = false) {
-     try {
-       const fn = warning ? logWarn : logInfo;
-
-       if (typeof fn === 'function') {
-         apply(fn, win.console, [
-           '[BOSS 定向防跳转] v' + version + ' ' + message
-         ]);
-       }
-     } catch (_) {}
-   }
-
-   // 原版模块特征识别
-   function matchesReviewedDetector(factory) {
-     if (typeof factory !== 'function') return false;
-
-     let source;
-
-     try {
-       source = apply(functionSource, factory, []);
-     } catch (_) {
-       return false;
-     }
-
-     const common =
-       source.includes('largeObjectArray') &&
-       source.includes('__defineGetter__') &&
-       source.includes('Unable to obtain information') &&
-       /\b(?:new\s+)?Array\s*\(\s*1e9\s*\)/.test(source);
-
-     const legacyFrame = source.includes('parent.__xbcw');
-
-     const geekFrame =
-       source.includes('createElement("iframe")') &&
-       source.includes('.contentWindow') &&
-       source.includes('noDebug:');
-
-     return common && (legacyFrame || geekFrame);
-   }
-
-   function makeReplacement() {
-     return function bossReviewedDetectorReplacement(module, exports) {
-       let initialized = false;
-
-       function initialize(options, callback) {
-         if (!options || !options.appName) return undefined;
-
-         if (typeof callback === 'function') {
-           try {
-             callback();
-           } catch (_) {}
-         }
-
-         if (!initialized) {
-           initialized = true;
-
-           report(
-             '已执行模块初始化替代实现；' +
-             (
-               typeof callback === 'function'
-                 ? '已调用原初始化回调。'
-                 : '调用方未传初始化回调。'
-             )
-           );
-         }
-
-         return {
-           success: true,
-           reason: '',
-           check: () => true
-         };
-       }
-
-       for (const name of ['a', 'X', 'noDebug']) {
-         define(exports, name, {
-           enumerable: true,
-           get: () => initialize
-         });
-       }
-     };
-   }
-
-   // 原版独立页面检测处理
-   function inspectStandaloneSign(sign) {
-     if (!sign || typeof sign !== 'object') return sign;
-
-     const descriptor = getOwnDescriptor(sign, 'encryptPwd');
-
-     if (
-       !descriptor ||
-       !('value' in descriptor) ||
-       !matchesReviewedDetector(descriptor.value)
-     ) return sign;
-
-     let source;
-
-     try {
-       source = apply(functionSource, descriptor.value, []);
-     } catch (_) {
-       return sign;
-     }
-
-     if (
-       !source.includes('appName:"zhipin_web_geek_jsp_web"') ||
-       !source.includes('window.Detail.initDg()')
-     ) return sign;
-
-     let initialized = false;
-
-     function bossReviewedStandaloneDetectorReplacement() {
-       const detail = win.Detail;
-
-       if (!detail || typeof detail.initDg !== 'function') {
-         report('独立页面初始化回调缺失，未完成初始化标记。', true);
-         return;
-       }
-
-       try {
-         apply(detail.initDg, detail, []);
-
-         if (!initialized) {
-           initialized = true;
-
-           report(
-             '已执行 Sign.encryptPwd 替代实现，' +
-             '并调用 Detail.initDg 初始化回调。'
-           );
-         }
-       } catch (_) {
-         report('独立页面初始化回调失败，未完成初始化标记。', true);
-       }
-     }
-
-     try {
-       define(sign, 'encryptPwd', {
-         ...descriptor,
-         value: bossReviewedStandaloneDetectorReplacement
-       });
-
-       report(
-         '已识别并替换独立页面反调试入口 Sign.encryptPwd；' +
-         '保留 Detail.initDg 初始化回调。'
-       );
-     } catch (_) {
-       report('独立页面 Sign.encryptPwd 不可改写，未生效。', true);
-     }
-
-     return sign;
-   }
-
-   function installStandaloneSign() {
-     const key = 'Sign';
-     const signMarker = '__bossAntiRefreshSignV1';
-
-     try {
-       const original = getOwnDescriptor(win, key);
-
-       if (
-         original &&
-         original.get &&
-         original.get[signMarker]
-       ) return;
-
-       if (original && !('value' in original)) {
-         report('已有 Sign 访问器，未覆盖独立页面入口。', true);
-         return;
-       }
-
-       if (original && !original.configurable) {
-         inspectStandaloneSign(original.value);
-         report('Sign 不可重新定义，无法监听后续赋值。', true);
-         return;
-       }
-
-       let current = inspectStandaloneSign(
-         original ? original.value : undefined
-       );
-
-       const readSign = () => current;
-
-       define(readSign, signMarker, { value: true });
-
-       define(win, key, {
-         configurable: true,
-         enumerable: original ? original.enumerable : true,
-         get: readSign,
-         set: value => {
-           current = inspectStandaloneSign(value);
-         }
-       });
-
-       report('独立页面 Sign 入口已就绪，等待识别目标函数。');
-     } catch (_) {
-       report('独立页面 Sign 入口初始化失败，未生效。', true);
-     }
-   }
-
-   // Webpack 模块处理
-   function inspectPayload(payload, queueName) {
-     if (!isArray(payload)) return;
-
-     const modules = payload[1];
-
-     if (!modules || typeof modules !== 'object') return;
-
-     for (const id of ownKeys(modules)) {
-       const descriptor = getOwnDescriptor(modules, id);
-
-       if (!descriptor || !('value' in descriptor)) continue;
-
-       const factory = descriptor.value;
-
-       if (!matchesReviewedDetector(factory)) continue;
-
-       let replacement = replacements.get(factory);
-
-       if (!replacement) {
-         replacement = makeReplacement();
-         replacements.set(factory, replacement);
-       }
-
-       try {
-         define(modules, id, {
-           ...descriptor,
-           value: replacement
-         });
-
-         report(
-           '已识别并替换反调试模块 ' +
-           id +
-           '（' + queueName + '）；保留初始化回调。'
-         );
-       } catch (_) {
-         report('模块 ' + id + ' 不可改写，未生效。', true);
-       }
-     }
-   }
-
-   function hookQueue(queue, queueName) {
-     if (!isArray(queue) || wrappedQueues.has(queue)) return queue;
-
-     const pushDescriptor = getOwnDescriptor(queue, 'push');
-
-     if (pushDescriptor && !pushDescriptor.configurable) {
-       report('队列 push 不可改写，未生效。', true);
-       return queue;
-     }
-
-     for (let i = 0; i < queue.length; i++) {
-       inspectPayload(queue[i], queueName);
-     }
-
-     let currentPush = queue.push;
-
-     function wrapPush(delegate) {
-       if (typeof delegate !== 'function') return delegate;
-
-       return function bossGuardedChunkPush(...payloads) {
-         for (const payload of payloads) {
-           inspectPayload(payload, queueName);
-         }
-
-         return apply(delegate, this, payloads);
-       };
-     }
-
-     currentPush = wrapPush(currentPush);
-
-     try {
-       define(queue, 'push', {
-         configurable: true,
-         enumerable: pushDescriptor
-           ? pushDescriptor.enumerable
-           : false,
-         get: () => currentPush,
-         set: nextPush => {
-           currentPush = wrapPush(nextPush);
-         }
-       });
-
-       wrappedQueues.add(queue);
-     } catch (_) {
-       report('无法安装队列钩子，未生效。', true);
-     }
-
-     return queue;
-   }
-
-   function installQueue(key) {
-     try {
-       const original = getOwnDescriptor(win, key);
-
-       if (
-         original &&
-         original.get &&
-         original.get[marker]
-       ) return;
-
-       if (original && !original.configurable) {
-         report(key + ' 不可改写，未生效。', true);
-         return;
-       }
-
-       let queue = hookQueue(
-         original ? win[key] : [],
-         key
-       );
-
-       const readQueue = () => queue;
-
-       define(readQueue, marker, { value: true });
-
-       define(win, key, {
-         configurable: true,
-         enumerable: original ? original.enumerable : true,
-         get: readQueue,
-         set: nextQueue => {
-           queue = hookQueue(nextQueue, key);
-         }
-       });
-
-       report(
-         key +
-         ' 已就绪，等待识别目标模块；须整页刷新后生效。'
-       );
-     } catch (_) {
-       report(key + ' 初始化失败，未生效。', true);
-     }
-   }
-
-   // ================================================
-   // v0.1.6 新增：聊天页专用兼容逻辑
-   // ================================================
-   //
-   // chat-new v5575 的检测入口位于主模块 99616。
-   // 它不属于原版脚本识别的模块特征。
-   //
-   // 通过特定的 AB 配置分支处理聊天页初始化。
-   // 其他配置项仍由原函数返回。
-   //
-   function installChatABGuard() {
-     if (
-       !/^\/web\/geek\/chat(?:\/|$)/.test(
-         win.location.pathname
-       )
-     ) return;
-
-     const rootKey = 'iGeekRoot';
-     const chatFlagKey = 'nd_result_13912_number_1';
-     const chatFlagValue = 'QM&Lb';
-
-     const methodMarker = '__bossAntiRefreshChatGetABDataV1';
-
-     let reported = false;
-     let patching = false;
-
-     function patchRoot(root) {
-       if (
-         patching ||
-         !root ||
-         (
-           typeof root !== 'object' &&
-           typeof root !== 'function'
-         )
-       ) return;
-
-       patching = true;
-
-       try {
-         const service = root.aBService;
-
-         if (
-           !service ||
-           (
-             typeof service !== 'object' &&
-             typeof service !== 'function'
-           )
-         ) return;
-
-         const current = service.getABData;
-
-         if (
-           typeof current !== 'function' ||
-           current[methodMarker]
-         ) return;
-
-         const guarded = function bossChatGuardedGetABData(...args) {
-           const result = apply(current, this, args);
-
-           if (args[0] !== chatFlagKey) {
-             return result;
-           }
-
-           if (!reported) {
-             reported = true;
-
-             report(
-               'Chat AB guard applied to ' +
-               chatFlagKey +
-               '; detector startup gated.'
-             );
-           }
-
-           return (
-             result &&
-             typeof result === 'object'
-           )
-             ? { ...result, result: chatFlagValue }
-             : { result: chatFlagValue };
-         };
-
-         define(guarded, methodMarker, {
-           value: true
-         });
-
-         const descriptor = getOwnDescriptor(
-           service,
-           'getABData'
-         );
-
-         if (
-           descriptor &&
-           !('value' in descriptor)
-         ) {
-           report(
-             'Chat AB service has accessor getABData; ' +
-             'guard not applied.',
-             true
-           );
-           return;
-         }
-
-         if (
-           descriptor &&
-           descriptor.configurable === false &&
-           descriptor.writable === false
-         ) {
-           report(
-             'Chat AB service getABData is read-only; ' +
-             'guard not applied.',
-             true
-           );
-           return;
-         }
-
-         if (
-           descriptor &&
-           descriptor.configurable === false
-         ) {
-           service.getABData = guarded;
-         } else {
-           define(service, 'getABData', {
-             configurable: true,
-             enumerable: descriptor
-               ? descriptor.enumerable
-               : true,
-             writable: true,
-             value: guarded
-           });
-         }
-
-         report('Chat AB service hook installed.');
-       } catch (error) {
-         report(
-           'Chat AB service hook failed: ' + String(error),
-           true
-         );
-       } finally {
-         patching = false;
-       }
-     }
-
-     try {
-       const descriptor = getOwnDescriptor(win, rootKey);
-
-       if (
-         descriptor &&
-         descriptor.configurable === false
-       ) {
-         let tries = 0;
-
-         const timer = win.setInterval(() => {
-           try {
-             patchRoot(win[rootKey]);
-           } catch (_) {}
-
-           if (++tries >= 400) {
-             win.clearInterval(timer);
-           }
-         }, 10);
-
-         report(
-           'Chat root is non-configurable; ' +
-           'using best-effort fallback.',
-           true
-         );
-
-         return;
-       }
-
-       let currentValue =
-         descriptor && 'value' in descriptor
-           ? descriptor.value
-           : undefined;
-
-       const oldGet = descriptor && descriptor.get;
-       const oldSet = descriptor && descriptor.set;
-
-       const readRoot = () => oldGet
-         ? apply(oldGet, win, [])
-         : currentValue;
-
-       define(win, rootKey, {
-         configurable: true,
-         enumerable: descriptor
-           ? descriptor.enumerable
-           : true,
-
-         get: function () {
-           const root = readRoot();
-
-           patchRoot(root);
-
-           return root;
-         },
-
-         set: function (next) {
-           if (oldSet) {
-             apply(oldSet, win, [next]);
-           } else if (!oldGet) {
-             currentValue = next;
-           }
-
-           patchRoot(readRoot());
-         }
-       });
-
-       patchRoot(readRoot());
-
-       report(
-         'Chat entry guard ready before page initialization.'
-       );
-     } catch (error) {
-       report(
-         'Chat entry guard setup failed: ' + String(error),
-         true
-       );
-     }
-   }
-
-   // ================================================
-   // 初始化
-   // ================================================
-
-   installChatABGuard();
-
-   for (const key of queueNames) {
-     installQueue(key);
-   }
-
-   installStandaloneSign();
-
- })();
+// ==UserScript==
+// @name         BOSS 防刷新 (Chat compatibility)
+// @name:en      BOSS Anti Refresh - Chat compatibility
+// @namespace    https://local.invalid/boss-anti-refresh-chat-compat
+// @version      0.1.6
+// @description  BOSS 职位页和聊天页反调试兼容处理
+// @author       creamtea47
+// @license      MIT
+// @match        https://www.zhipin.com/*
+// @run-at       document-start
+// @sandbox      raw
+// @grant        none
+// @noframes
+// ==/UserScript==
+
+(() => {
+  'use strict';
+
+  const win = window;
+
+  if (
+    win.top !== win ||
+    win.location.protocol !== 'https:' ||
+    win.location.hostname !== 'www.zhipin.com'
+  ) return;
+
+  const version = '0.1.6';
+
+  const queueNames = [
+    'webpackJsonp',
+    'webpackChunkfe_web_sign',
+    'webpackChunkgeek'
+  ];
+
+  const marker = '__bossAntiRefreshQueueV2';
+  const apply = Reflect.apply;
+  const getOwnDescriptor = Object.getOwnPropertyDescriptor;
+  const define = Object.defineProperty;
+  const ownKeys = Object.keys;
+  const isArray = Array.isArray;
+  const functionSource = Function.prototype.toString;
+
+  const wrappedQueues = new WeakSet();
+  const replacements = new WeakMap();
+
+  const logInfo = win.console && win.console.info;
+  const logWarn = win.console && win.console.warn;
+
+  function report(message, warning = false) {
+    try {
+      const fn = warning ? logWarn : logInfo;
+
+      if (typeof fn === 'function') {
+        apply(fn, win.console, [
+          '[BOSS 定向防跳转] v' + version + ' ' + message
+        ]);
+      }
+    } catch (_) {}
+  }
+
+  // 原版模块特征识别
+  function matchesReviewedDetector(factory) {
+    if (typeof factory !== 'function') return false;
+
+    let source;
+
+    try {
+      source = apply(functionSource, factory, []);
+    } catch (_) {
+      return false;
+    }
+
+    const common =
+      source.includes('largeObjectArray') &&
+      source.includes('__defineGetter__') &&
+      source.includes('Unable to obtain information') &&
+      /\b(?:new\s+)?Array\s*\(\s*1e9\s*\)/.test(source);
+
+    const legacyFrame = source.includes('parent.__xbcw');
+
+    const geekFrame =
+      source.includes('createElement("iframe")') &&
+      source.includes('.contentWindow') &&
+      source.includes('noDebug:');
+
+    return common && (legacyFrame || geekFrame);
+  }
+
+  function makeReplacement() {
+    return function bossReviewedDetectorReplacement(module, exports) {
+      let initialized = false;
+
+      function initialize(options, callback) {
+        if (!options || !options.appName) return undefined;
+
+        if (typeof callback === 'function') {
+          try {
+            callback();
+          } catch (_) {}
+        }
+
+        if (!initialized) {
+          initialized = true;
+
+          report(
+            '已执行模块初始化替代实现；' +
+            (
+              typeof callback === 'function'
+                ? '已调用原初始化回调。'
+                : '调用方未传初始化回调。'
+            )
+          );
+        }
+
+        return {
+          success: true,
+          reason: '',
+          check: () => true
+        };
+      }
+
+      for (const name of ['a', 'X', 'noDebug']) {
+        define(exports, name, {
+          enumerable: true,
+          get: () => initialize
+        });
+      }
+    };
+  }
+
+  // 原版独立页面检测处理
+  function inspectStandaloneSign(sign) {
+    if (!sign || typeof sign !== 'object') return sign;
+
+    const descriptor = getOwnDescriptor(sign, 'encryptPwd');
+
+    if (
+      !descriptor ||
+      !('value' in descriptor) ||
+      !matchesReviewedDetector(descriptor.value)
+    ) return sign;
+
+    let source;
+
+    try {
+      source = apply(functionSource, descriptor.value, []);
+    } catch (_) {
+      return sign;
+    }
+
+    if (
+      !source.includes('appName:"zhipin_web_geek_jsp_web"') ||
+      !source.includes('window.Detail.initDg()')
+    ) return sign;
+
+    let initialized = false;
+
+    function bossReviewedStandaloneDetectorReplacement() {
+      const detail = win.Detail;
+
+      if (!detail || typeof detail.initDg !== 'function') {
+        report('独立页面初始化回调缺失，未完成初始化标记。', true);
+        return;
+      }
+
+      try {
+        apply(detail.initDg, detail, []);
+
+        if (!initialized) {
+          initialized = true;
+
+          report(
+            '已执行 Sign.encryptPwd 替代实现，' +
+            '并调用 Detail.initDg 初始化回调。'
+          );
+        }
+      } catch (_) {
+        report('独立页面初始化回调失败，未完成初始化标记。', true);
+      }
+    }
+
+    try {
+      define(sign, 'encryptPwd', {
+        ...descriptor,
+        value: bossReviewedStandaloneDetectorReplacement
+      });
+
+      report(
+        '已识别并替换独立页面反调试入口 Sign.encryptPwd；' +
+        '保留 Detail.initDg 初始化回调。'
+      );
+    } catch (_) {
+      report('独立页面 Sign.encryptPwd 不可改写，未生效。', true);
+    }
+
+    return sign;
+  }
+
+  function installStandaloneSign() {
+    const key = 'Sign';
+    const signMarker = '__bossAntiRefreshSignV1';
+
+    try {
+      const original = getOwnDescriptor(win, key);
+
+      if (
+        original &&
+        original.get &&
+        original.get[signMarker]
+      ) return;
+
+      if (original && !('value' in original)) {
+        report('已有 Sign 访问器，未覆盖独立页面入口。', true);
+        return;
+      }
+
+      if (original && !original.configurable) {
+        inspectStandaloneSign(original.value);
+        report('Sign 不可重新定义，无法监听后续赋值。', true);
+        return;
+      }
+
+      let current = inspectStandaloneSign(
+        original ? original.value : undefined
+      );
+
+      const readSign = () => current;
+
+      define(readSign, signMarker, { value: true });
+
+      define(win, key, {
+        configurable: true,
+        enumerable: original ? original.enumerable : true,
+        get: readSign,
+        set: value => {
+          current = inspectStandaloneSign(value);
+        }
+      });
+
+      report('独立页面 Sign 入口已就绪，等待识别目标函数。');
+    } catch (_) {
+      report('独立页面 Sign 入口初始化失败，未生效。', true);
+    }
+  }
+
+  // Webpack 模块处理
+  function inspectPayload(payload, queueName) {
+    if (!isArray(payload)) return;
+
+    const modules = payload[1];
+
+    if (!modules || typeof modules !== 'object') return;
+
+    for (const id of ownKeys(modules)) {
+      const descriptor = getOwnDescriptor(modules, id);
+
+      if (!descriptor || !('value' in descriptor)) continue;
+
+      const factory = descriptor.value;
+
+      if (!matchesReviewedDetector(factory)) continue;
+
+      let replacement = replacements.get(factory);
+
+      if (!replacement) {
+        replacement = makeReplacement();
+        replacements.set(factory, replacement);
+      }
+
+      try {
+        define(modules, id, {
+          ...descriptor,
+          value: replacement
+        });
+
+        report(
+          '已识别并替换反调试模块 ' +
+          id +
+          '（' + queueName + '）；保留初始化回调。'
+        );
+      } catch (_) {
+        report('模块 ' + id + ' 不可改写，未生效。', true);
+      }
+    }
+  }
+
+  function hookQueue(queue, queueName) {
+    if (!isArray(queue) || wrappedQueues.has(queue)) return queue;
+
+    const pushDescriptor = getOwnDescriptor(queue, 'push');
+
+    if (pushDescriptor && !pushDescriptor.configurable) {
+      report('队列 push 不可改写，未生效。', true);
+      return queue;
+    }
+
+    for (let i = 0; i < queue.length; i++) {
+      inspectPayload(queue[i], queueName);
+    }
+
+    let currentPush = queue.push;
+
+    function wrapPush(delegate) {
+      if (typeof delegate !== 'function') return delegate;
+
+      return function bossGuardedChunkPush(...payloads) {
+        for (const payload of payloads) {
+          inspectPayload(payload, queueName);
+        }
+
+        return apply(delegate, this, payloads);
+      };
+    }
+
+    currentPush = wrapPush(currentPush);
+
+    try {
+      define(queue, 'push', {
+        configurable: true,
+        enumerable: pushDescriptor
+          ? pushDescriptor.enumerable
+          : false,
+        get: () => currentPush,
+        set: nextPush => {
+          currentPush = wrapPush(nextPush);
+        }
+      });
+
+      wrappedQueues.add(queue);
+    } catch (_) {
+      report('无法安装队列钩子，未生效。', true);
+    }
+
+    return queue;
+  }
+
+  function installQueue(key) {
+    try {
+      const original = getOwnDescriptor(win, key);
+
+      if (
+        original &&
+        original.get &&
+        original.get[marker]
+      ) return;
+
+      if (original && !original.configurable) {
+        report(key + ' 不可改写，未生效。', true);
+        return;
+      }
+
+      let queue = hookQueue(
+        original ? win[key] : [],
+        key
+      );
+
+      const readQueue = () => queue;
+
+      define(readQueue, marker, { value: true });
+
+      define(win, key, {
+        configurable: true,
+        enumerable: original ? original.enumerable : true,
+        get: readQueue,
+        set: nextQueue => {
+          queue = hookQueue(nextQueue, key);
+        }
+      });
+
+      report(
+        key +
+        ' 已就绪，等待识别目标模块；须整页刷新后生效。'
+      );
+    } catch (_) {
+      report(key + ' 初始化失败，未生效。', true);
+    }
+  }
+
+  // ================================================
+  // v0.1.6 新增：聊天页专用兼容逻辑
+  // ================================================
+  //
+  // chat-new v5575 的检测入口位于主模块 99616。
+  // 它不属于原版脚本识别的模块特征。
+  //
+  // 通过特定的 AB 配置分支处理聊天页初始化。
+  // 其他配置项仍由原函数返回。
+  //
+  function installChatABGuard() {
+    if (
+      !/^\/web\/geek\/chat(?:\/|$)/.test(
+        win.location.pathname
+      )
+    ) return;
+
+    const rootKey = 'iGeekRoot';
+    const chatFlagKey = 'nd_result_13912_number_1';
+    const chatFlagValue = 'QM&Lb';
+
+    const methodMarker = '__bossAntiRefreshChatGetABDataV1';
+
+    let reported = false;
+    let patching = false;
+
+    function patchRoot(root) {
+      if (
+        patching ||
+        !root ||
+        (
+          typeof root !== 'object' &&
+          typeof root !== 'function'
+        )
+      ) return;
+
+      patching = true;
+
+      try {
+        const service = root.aBService;
+
+        if (
+          !service ||
+          (
+            typeof service !== 'object' &&
+            typeof service !== 'function'
+          )
+        ) return;
+
+        const current = service.getABData;
+
+        if (
+          typeof current !== 'function' ||
+          current[methodMarker]
+        ) return;
+
+        const guarded = function bossChatGuardedGetABData(...args) {
+          const result = apply(current, this, args);
+
+          if (args[0] !== chatFlagKey) {
+            return result;
+          }
+
+          if (!reported) {
+            reported = true;
+
+            report(
+              'Chat AB guard applied to ' +
+              chatFlagKey +
+              '; detector startup gated.'
+            );
+          }
+
+          return (
+            result &&
+            typeof result === 'object'
+          )
+            ? { ...result, result: chatFlagValue }
+            : { result: chatFlagValue };
+        };
+
+        define(guarded, methodMarker, {
+          value: true
+        });
+
+        const descriptor = getOwnDescriptor(
+          service,
+          'getABData'
+        );
+
+        if (
+          descriptor &&
+          !('value' in descriptor)
+        ) {
+          report(
+            'Chat AB service has accessor getABData; ' +
+            'guard not applied.',
+            true
+          );
+          return;
+        }
+
+        if (
+          descriptor &&
+          descriptor.configurable === false &&
+          descriptor.writable === false
+        ) {
+          report(
+            'Chat AB service getABData is read-only; ' +
+            'guard not applied.',
+            true
+          );
+          return;
+        }
+
+        if (
+          descriptor &&
+          descriptor.configurable === false
+        ) {
+          service.getABData = guarded;
+        } else {
+          define(service, 'getABData', {
+            configurable: true,
+            enumerable: descriptor
+              ? descriptor.enumerable
+              : true,
+            writable: true,
+            value: guarded
+          });
+        }
+
+        report('Chat AB service hook installed.');
+      } catch (error) {
+        report(
+          'Chat AB service hook failed: ' + String(error),
+          true
+        );
+      } finally {
+        patching = false;
+      }
+    }
+
+    try {
+      const descriptor = getOwnDescriptor(win, rootKey);
+
+      if (
+        descriptor &&
+        descriptor.configurable === false
+      ) {
+        let tries = 0;
+
+        const timer = win.setInterval(() => {
+          try {
+            patchRoot(win[rootKey]);
+          } catch (_) {}
+
+          if (++tries >= 400) {
+            win.clearInterval(timer);
+          }
+        }, 10);
+
+        report(
+          'Chat root is non-configurable; ' +
+          'using best-effort fallback.',
+          true
+        );
+
+        return;
+      }
+
+      let currentValue =
+        descriptor && 'value' in descriptor
+          ? descriptor.value
+          : undefined;
+
+      const oldGet = descriptor && descriptor.get;
+      const oldSet = descriptor && descriptor.set;
+
+      const readRoot = () => oldGet
+        ? apply(oldGet, win, [])
+        : currentValue;
+
+      define(win, rootKey, {
+        configurable: true,
+        enumerable: descriptor
+          ? descriptor.enumerable
+          : true,
+
+        get: function () {
+          const root = readRoot();
+
+          patchRoot(root);
+
+          return root;
+        },
+
+        set: function (next) {
+          if (oldSet) {
+            apply(oldSet, win, [next]);
+          } else if (!oldGet) {
+            currentValue = next;
+          }
+
+          patchRoot(readRoot());
+        }
+      });
+
+      patchRoot(readRoot());
+
+      report(
+        'Chat entry guard ready before page initialization.'
+      );
+    } catch (error) {
+      report(
+        'Chat entry guard setup failed: ' + String(error),
+        true
+      );
+    }
+  }
+
+  // ================================================
+  // 初始化
+  // ================================================
+
+  installChatABGuard();
+
+  for (const key of queueNames) {
+    installQueue(key);
+  }
+
+  installStandaloneSign();
+
+})();
