@@ -137,12 +137,8 @@ BOSS 可能调整前端打包方式、模块特征或 AB 配置。当前脚本�
 - 针对 `iGeekRoot.aBService.getABData` 的指定 AB 配置项进行定向处理。
 - 保留原有 Webpack 模块识别和独立页面 Sign 入口处理。
 
-## 版权
+## License
 
-脚本源码中的版权声明为：
+本项目采用 [MIT License](LICENSE) 开源。
 
-```text
-Copyright 2026 creamtea47
-```
-
-当前仓库未声明 MIT、Apache-2.0 等标准开源许可证。转载、修改和再分发请先确认版权许可。
+Copyright (c) 2026 creamtea47
